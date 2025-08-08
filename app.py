@@ -72,19 +72,9 @@ async def startup_event():
         print("✅ Native Orpheus TTS service initialized successfully")
     else:
         print("❌ Failed to initialize native Orpheus TTS service")
-        print("📦 Installing orpheus-speech package...")
-        import subprocess
-        try:
-            subprocess.check_call(["pip", "install", "orpheus-speech"])
-            print("✅ orpheus-speech package installed")
-            # Try to initialize again
-            success = native_tts_service.initialize()
-            if success:
-                print("✅ Native Orpheus TTS service initialized successfully after package install")
-            else:
-                print("❌ Still failed to initialize native Orpheus TTS service")
-        except Exception as e:
-            print(f"❌ Failed to install orpheus-speech package: {e}")
+        print("⚠️ Falling back to API-based TTS generation")
+        # Set a flag to use fallback mode
+        native_tts_service.fallback_mode = True
 
 # We'll use FastAPI's built-in startup complete mechanism
 # The log message "INFO:     Application startup complete." indicates
@@ -452,5 +442,5 @@ if __name__ == "__main__":
     # Include restart.flag in the reload_dirs to monitor it for changes
     extra_files = ["restart.flag"] if os.path.exists("restart.flag") else []
     
-    # Start with reload enabled to allow automatic restart when restart.flag changes
-    uvicorn.run("app:app", host=host, port=port, reload=True, reload_dirs=["."], reload_includes=["*.py", "*.html", "restart.flag"])
+    # Start without reload to avoid dependency conflicts
+    uvicorn.run("app:app", host=host, port=port, reload=False)
