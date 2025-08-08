@@ -52,7 +52,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import json
 
-from tts_engine import generate_speech_from_api, AVAILABLE_VOICES, DEFAULT_VOICE, VOICE_TO_LANGUAGE, AVAILABLE_LANGUAGES
+from tts_engine import AVAILABLE_VOICES, DEFAULT_VOICE, VOICE_TO_LANGUAGE, AVAILABLE_LANGUAGES
+from native_tts_service import native_tts_service
 
 # Create FastAPI app
 app = FastAPI(
@@ -60,6 +61,30 @@ app = FastAPI(
     description="High-performance Text-to-Speech server using Orpheus-FASTAPI",
     version="1.0.0"
 )
+
+# Startup event to initialize native TTS service
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the native TTS service on startup."""
+    print("🎤 Initializing native Orpheus TTS service...")
+    success = native_tts_service.initialize()
+    if success:
+        print("✅ Native Orpheus TTS service initialized successfully")
+    else:
+        print("❌ Failed to initialize native Orpheus TTS service")
+        print("📦 Installing orpheus-speech package...")
+        import subprocess
+        try:
+            subprocess.check_call(["pip", "install", "orpheus-speech"])
+            print("✅ orpheus-speech package installed")
+            # Try to initialize again
+            success = native_tts_service.initialize()
+            if success:
+                print("✅ Native Orpheus TTS service initialized successfully after package install")
+            else:
+                print("❌ Still failed to initialize native Orpheus TTS service")
+        except Exception as e:
+            print(f"❌ Failed to install orpheus-speech package: {e}")
 
 # We'll use FastAPI's built-in startup complete mechanism
 # The log message "INFO:     Application startup complete." indicates
@@ -112,17 +137,18 @@ async def create_speech_api(request: SpeechRequest):
     if use_batching:
         print(f"Using batched generation for long text ({len(request.input)} characters)")
     
-    # Generate speech with automatic batching for long texts
+    # Generate speech using native TTS service
     start = time.time()
-    generate_speech_from_api(
-        prompt=request.input,
+    success = native_tts_service.generate_speech(
+        text=request.input,
         voice=request.voice,
-        output_file=output_path,
-        use_batching=use_batching,
-        max_batch_chars=1000  # Process in ~1000 character chunks (roughly 1 paragraph)
+        output_file=output_path
     )
     end = time.time()
     generation_time = round(end - start, 2)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Speech generation failed")
     
     # Return raw audio bytes for API compatibility
     print(f"DEBUG: Attempting to read audio file: {output_path}")
@@ -183,17 +209,21 @@ async def speak(request: Request):
     if use_batching:
         print(f"Using batched generation for long text ({len(text)} characters)")
     
-    # Generate speech with batching for longer texts
+    # Generate speech using native TTS service
     start = time.time()
-    generate_speech_from_api(
-        prompt=text, 
-        voice=voice, 
-        output_file=output_path,
-        use_batching=use_batching,
-        max_batch_chars=1000
+    success = native_tts_service.generate_speech(
+        text=text,
+        voice=voice,
+        output_file=output_path
     )
     end = time.time()
     generation_time = round(end - start, 2)
+    
+    if not success:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Speech generation failed"}
+        )
 
     return JSONResponse(content={
         "status": "ok",
@@ -345,17 +375,27 @@ async def generate_from_web(
     if use_batching:
         print(f"Using batched generation for long text from web form ({len(text)} characters)")
     
-    # Generate speech with batching for longer texts
+    # Generate speech using native TTS service
     start = time.time()
-    generate_speech_from_api(
-        prompt=text, 
-        voice=voice, 
-        output_file=output_path,
-        use_batching=use_batching,
-        max_batch_chars=1000
+    success = native_tts_service.generate_speech(
+        text=text,
+        voice=voice,
+        output_file=output_path
     )
     end = time.time()
     generation_time = round(end - start, 2)
+    
+    if not success:
+        return templates.TemplateResponse(
+            "tts.html",
+            {
+                "request": request,
+                "error": "Speech generation failed. Please try again.",
+                "voices": AVAILABLE_VOICES,
+                "VOICE_TO_LANGUAGE": VOICE_TO_LANGUAGE,
+                "AVAILABLE_LANGUAGES": AVAILABLE_LANGUAGES
+            }
+        )
     
     return templates.TemplateResponse(
         "tts.html",
