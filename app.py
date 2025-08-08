@@ -45,7 +45,7 @@ ensure_env_file_exists()
 load_dotenv(override=True)
 
 from fastapi import FastAPI, Request, Form, HTTPException, Depends
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -123,12 +123,20 @@ async def create_speech_api(request: SpeechRequest):
     end = time.time()
     generation_time = round(end - start, 2)
     
-    # Return audio file
-    return FileResponse(
-        path=output_path,
-        media_type="audio/wav",
-        filename=f"{request.voice}_{timestamp}.wav"
-    )
+    # Return raw audio bytes for API compatibility
+    try:
+        with open(output_path, "rb") as audio_file:
+            audio_data = audio_file.read()
+        
+        return Response(
+            content=audio_data,
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": f"attachment; filename={request.voice}_{timestamp}.wav"
+            }
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Audio generation failed")
 
 @app.get("/v1/audio/voices")
 async def list_voices():
