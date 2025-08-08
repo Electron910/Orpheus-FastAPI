@@ -1,10 +1,11 @@
 # Orpheus-FASTAPI by Lex-au
 # https://github.com/Lex-au/Orpheus-FastAPI
 # Description: Main FastAPI server for Orpheus Text-to-Speech
-
-import os
 import time
-import asyncio
+import json
+import threading
+import queue
+import os
 from datetime import datetime
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -124,9 +125,14 @@ async def create_speech_api(request: SpeechRequest):
     generation_time = round(end - start, 2)
     
     # Return raw audio bytes for API compatibility
+    print(f"DEBUG: Attempting to read audio file: {output_path}")
+    print(f"DEBUG: File exists: {os.path.exists(output_path)}")
+    
     try:
         with open(output_path, "rb") as audio_file:
             audio_data = audio_file.read()
+        
+        print(f"DEBUG: Successfully read {len(audio_data)} bytes from audio file")
         
         return Response(
             content=audio_data,
@@ -135,8 +141,13 @@ async def create_speech_api(request: SpeechRequest):
                 "Content-Disposition": f"attachment; filename={request.voice}_{timestamp}.wav"
             }
         )
-    except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="Audio generation failed")
+    except FileNotFoundError as e:
+        print(f"ERROR: Audio file not found: {output_path}")
+        print(f"ERROR: Exception: {e}")
+        raise HTTPException(status_code=500, detail=f"Audio generation failed: {output_path} not found")
+    except Exception as e:
+        print(f"ERROR: Unexpected error reading audio file: {e}")
+        raise HTTPException(status_code=500, detail=f"Audio reading failed: {str(e)}")
 
 @app.get("/v1/audio/voices")
 async def list_voices():
