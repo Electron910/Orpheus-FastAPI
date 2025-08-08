@@ -24,6 +24,7 @@ class NativeTTSService:
         """Initialize the service with empty model references."""
         self.model = None
         self.initialized = False
+        self.fallback_mode = False
         self.model_name = "canopylabs/orpheus-tts-0.1-finetune-prod"
         self.device = None
         
@@ -69,7 +70,7 @@ class NativeTTSService:
     
     def generate_speech(self, text: str, voice: str = "tara", output_file: Optional[str] = None) -> bool:
         """
-        Generate speech from text using the native Orpheus model.
+        Generate speech from text using the native Orpheus model or fallback to API.
         
         Args:
             text: Text to convert to speech
@@ -79,6 +80,11 @@ class NativeTTSService:
         Returns:
             bool: Whether generation was successful
         """
+        # If in fallback mode, use the original API-based approach
+        if self.fallback_mode:
+            logger.info("Using fallback API-based TTS generation")
+            return self._generate_speech_fallback(text, voice, output_file)
+        
         if not self.initialized:
             logger.error("Orpheus TTS model not initialized")
             return False
@@ -125,6 +131,33 @@ class NativeTTSService:
                 
         except Exception as e:
             logger.error(f"Speech generation failed: {e}")
+            return False
+    
+    def _generate_speech_fallback(self, text: str, voice: str = "tara", output_file: Optional[str] = None) -> bool:
+        """
+        Fallback method using the original API-based TTS generation.
+        This imports and uses the existing tts_engine when native model fails.
+        """
+        try:
+            logger.info(f"Fallback TTS generation for: {text[:50]}{'...' if len(text) > 50 else ''}")
+            
+            # Import the original TTS engine
+            from tts_engine import generate_speech_from_api
+            
+            # Use the original API-based generation
+            generate_speech_from_api(
+                prompt=text,
+                voice=voice,
+                output_file=output_file,
+                use_batching=len(text) > 1000,
+                max_batch_chars=1000
+            )
+            
+            logger.info(f"Fallback TTS generation completed, saved to: {output_file}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Fallback TTS generation failed: {e}")
             return False
 
 # Global service instance
