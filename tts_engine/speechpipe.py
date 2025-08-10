@@ -396,3 +396,4 @@ def tokens_decoder_sync(syn_token_gen):
         yield chunk
 
     thread.join()
+
