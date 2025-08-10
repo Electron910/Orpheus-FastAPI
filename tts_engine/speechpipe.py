@@ -101,10 +101,11 @@ def convert_to_audio(multiframe, count):
         codes_2.unsqueeze(0)
     ]
     
-    # Ensure tokens are in valid range (clamp instead of rejecting)
-    codes[0] = torch.clamp(codes[0], 0, 4095)
-    codes[1] = torch.clamp(codes[1], 0, 4095)
-    codes[2] = torch.clamp(codes[2], 0, 4095)
+    # Check tokens are in valid range
+    if (torch.any(codes[0] < 0) or torch.any(codes[0] > 4096) or 
+        torch.any(codes[1] < 0) or torch.any(codes[1] > 4096) or 
+        torch.any(codes[2] < 0) or torch.any(codes[2] > 4096)):
+        return None
 
     # Use CUDA stream for parallel processing if available
     stream_ctx = torch.cuda.stream(cuda_stream) if cuda_stream is not None else torch.no_grad()
@@ -113,29 +114,22 @@ def convert_to_audio(multiframe, count):
         # Decode the audio
         audio_hat = model.decode(codes)
         
-        # Use the full decoded audio instead of a specific slice
-        # The SNAC model outputs the complete audio, no slicing needed
-        if audio_hat is None:
-            return None
-            
-        # Squeeze to remove batch dimension and get raw audio
-        audio_np = audio_hat.squeeze().detach().cpu().numpy()
+        # Extract the relevant slice and efficiently convert to bytes
+        # Keep data on GPU as long as possible
+        audio_slice = audio_hat[:, :, 2048:4096]
         
-        # Ensure we have valid audio data
-        if len(audio_np) == 0:
-            print("Warning: Empty audio from SNAC decode")
-            return None
-        
-        # Normalize audio to prevent clipping
-        max_val = max(abs(audio_np.max()), abs(audio_np.min()))
-        if max_val > 1.0:
-            audio_np = audio_np / max_val
-        
-        # Convert to 16-bit PCM format
-        audio_int16 = (audio_np * 32767).astype(np.int16)
-        audio_bytes = audio_int16.tobytes()
-        
-        print(f"Generated {len(audio_int16)} audio samples ({len(audio_int16)/24000:.2f}s)")
+        # Process on GPU if possible, with minimal data transfer
+        if snac_device == "cuda":
+            # Scale directly on GPU
+            audio_int16_tensor = (audio_slice * 32767).to(torch.int16)
+            # Only transfer the final result to CPU
+            audio_bytes = audio_int16_tensor.cpu().numpy().tobytes()
+        else:
+            # For non-CUDA devices, fall back to the original approach
+            detached_audio = audio_slice.detach().cpu()
+            audio_np = detached_audio.numpy()
+            audio_int16 = (audio_np * 32767).astype(np.int16)
+            audio_bytes = audio_int16.tobytes()
             
     return audio_bytes
 
@@ -148,72 +142,48 @@ MAX_CACHE_SIZE = 10000  # Increased cache size for better performance
 
 def turn_token_into_id(token_string, index):
     """
-    Fixed token-to-ID conversion that handles invalid tokens from current LLM.
-    Converts any token (including '>') to valid audio IDs for SNAC.
+    Optimized token-to-ID conversion with caching.
+    This is the definitive implementation used by both inference.py and speechpipe.py.
     
     Args:
         token_string: The token string to convert
         index: Position index used for token offset calculation
         
     Returns:
-        int: Token ID (always returns valid ID, never None)
+        int: Token ID if valid, None otherwise
     """
-    # Check cache first
+    # Check cache first (significant speedup for repeated tokens)
     cache_key = (token_string, index % 7)
     if cache_key in token_id_cache:
         return token_id_cache[cache_key]
+        
+    # Early rejection for obvious non-matches
+    if CUSTOM_TOKEN_PREFIX not in token_string:
+        return None
+        
+    # Process token
+    token_string = token_string.strip()
+    last_token_start = token_string.rfind(CUSTOM_TOKEN_PREFIX)
     
-    # Clean cache if too large
-    if len(token_id_cache) > MAX_CACHE_SIZE:
-        token_id_cache.clear()
+    if last_token_start == -1:
+        return None
+    
+    last_token = token_string[last_token_start:]
+    
+    if not (last_token.startswith(CUSTOM_TOKEN_PREFIX) and last_token.endswith(">")):
+        return None
         
     try:
-        # Method 1: Handle custom_token format (original)
-        if CUSTOM_TOKEN_PREFIX in token_string:
-            token_string = token_string.strip()
-            last_token_start = token_string.rfind(CUSTOM_TOKEN_PREFIX)
-            if last_token_start != -1:
-                last_token = token_string[last_token_start:]
-                if last_token.startswith(CUSTOM_TOKEN_PREFIX) and last_token.endswith(">"):
-                    number_str = last_token[14:-1]
-                    token_id = int(number_str) - 10 - ((index % 7) * 4096)
-                    token_id = abs(token_id) % 4096  # Ensure valid range
-                    token_id_cache[cache_key] = token_id
-                    return token_id
+        number_str = last_token[14:-1]
+        token_id = int(number_str) - 10 - ((index % 7) * 4096)
         
-        # Method 2: Handle numeric tokens
-        if str(token_string).isdigit():
-            token_id = int(token_string) % 4096
+        # Cache the result if it's valid
+        if len(token_id_cache) < MAX_CACHE_SIZE:
             token_id_cache[cache_key] = token_id
-            return token_id
-        
-        # Method 3: Handle invalid tokens like '>' (CRITICAL FIX)
-        # Convert any string to deterministic valid audio ID
-        token_str = str(token_string)
-        
-        # Use hash of token + index to create deterministic audio ID
-        import hashlib
-        hash_input = f"{token_str}_{index}"
-        hash_bytes = hashlib.md5(hash_input.encode()).digest()
-        
-        # Convert first 4 bytes to integer and ensure valid range
-        hash_int = int.from_bytes(hash_bytes[:4], byteorder='big')
-        token_id = hash_int % 4096
-        
-        # Ensure it's not zero (which can cause silence)
-        if token_id == 0:
-            token_id = (index % 7) + 1
-        
-        token_id_cache[cache_key] = token_id
+            
         return token_id
-        
-    except Exception:
-        # Emergency fallback - always return valid ID
-        emergency_id = ((index * 13) + 42) % 4096
-        if emergency_id == 0:
-            emergency_id = 1
-        token_id_cache[cache_key] = emergency_id
-        return emergency_id
+    except (ValueError, IndexError):
+        return None
 
 async def tokens_decoder(token_gen):
     """Optimized token decoder with early first-chunk processing for lower latency"""
@@ -396,4 +366,3 @@ def tokens_decoder_sync(syn_token_gen):
         yield chunk
 
     thread.join()
-
