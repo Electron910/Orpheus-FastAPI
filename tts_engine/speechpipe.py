@@ -113,22 +113,29 @@ def convert_to_audio(multiframe, count):
         # Decode the audio
         audio_hat = model.decode(codes)
         
-        # Extract the relevant slice and efficiently convert to bytes
-        # Keep data on GPU as long as possible
-        audio_slice = audio_hat[:, :, 2048:4096]
+        # Use the full decoded audio instead of a specific slice
+        # The SNAC model outputs the complete audio, no slicing needed
+        if audio_hat is None:
+            return None
+            
+        # Squeeze to remove batch dimension and get raw audio
+        audio_np = audio_hat.squeeze().detach().cpu().numpy()
         
-        # Process on GPU if possible, with minimal data transfer
-        if snac_device == "cuda":
-            # Scale directly on GPU
-            audio_int16_tensor = (audio_slice * 32767).to(torch.int16)
-            # Only transfer the final result to CPU
-            audio_bytes = audio_int16_tensor.cpu().numpy().tobytes()
-        else:
-            # For non-CUDA devices, fall back to the original approach
-            detached_audio = audio_slice.detach().cpu()
-            audio_np = detached_audio.numpy()
-            audio_int16 = (audio_np * 32767).astype(np.int16)
-            audio_bytes = audio_int16.tobytes()
+        # Ensure we have valid audio data
+        if len(audio_np) == 0:
+            print("Warning: Empty audio from SNAC decode")
+            return None
+        
+        # Normalize audio to prevent clipping
+        max_val = max(abs(audio_np.max()), abs(audio_np.min()))
+        if max_val > 1.0:
+            audio_np = audio_np / max_val
+        
+        # Convert to 16-bit PCM format
+        audio_int16 = (audio_np * 32767).astype(np.int16)
+        audio_bytes = audio_int16.tobytes()
+        
+        print(f"Generated {len(audio_int16)} audio samples ({len(audio_int16)/24000:.2f}s)")
             
     return audio_bytes
 
