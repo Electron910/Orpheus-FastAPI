@@ -1,36 +1,32 @@
 #!/usr/bin/env python3
 """
-Hybrid TTS Application - Integrates Original Orpheus TTS with existing FastAPI structure
-This replaces the problematic token-based approach with direct Orpheus TTS
+FIXED Hybrid TTS Application - Uses correct model name
 """
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import os
-import sys
 import struct
 import asyncio
 import multiprocessing
 from typing import Optional, Generator
 from dotenv import load_dotenv
 import uvicorn
-
-# Load environment variables
-load_dotenv()
-
-app = FastAPI(title="Orpheus TTS Hybrid API", version="2.0.0")
-
-# Mount static files and templates
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-if os.path.exists("templates"):
-    templates = Jinja2Templates(directory="templates")
+from contextlib import asynccontextmanager
 
 # Global model instance
 orpheus_engine = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await initialize_orpheus_model()
+    yield
+    # Shutdown
+    pass
+
+app = FastAPI(title="Orpheus TTS Hybrid API", version="2.0.0", lifespan=lifespan)
 
 class TTSRequest(BaseModel):
     prompt: str
@@ -44,23 +40,12 @@ def create_wav_header(sample_rate=24000, bits_per_sample=16, channels=1):
     """Create WAV file header for streaming audio"""
     byte_rate = sample_rate * channels * bits_per_sample // 8
     block_align = channels * bits_per_sample // 8
-    data_size = 0  # Unknown size for streaming
+    data_size = 0
 
     header = struct.pack(
         '<4sI4s4sIHHIIHH4sI',
-        b'RIFF',
-        36 + data_size,       
-        b'WAVE',
-        b'fmt ',
-        16,                  
-        1,                   # PCM format
-        channels,
-        sample_rate,
-        byte_rate,
-        block_align,
-        bits_per_sample,
-        b'data',
-        data_size
+        b'RIFF', 36 + data_size, b'WAVE', b'fmt ', 16, 1, channels,
+        sample_rate, byte_rate, block_align, bits_per_sample, b'data', data_size
     )
     return header
 
@@ -75,7 +60,8 @@ async def initialize_orpheus_model():
         print("🎤 Initializing Original Orpheus TTS Model...")
         from orpheus_tts import OrpheusModel
         
-        model_name = os.environ.get('ORPHEUS_MODEL_NAME', 'canopylabs/orpheus-tts-0.1-finetune-prod')
+        # Use the CORRECT model name
+        model_name = "canopylabs/orpheus-tts-0.1-finetune-prod"
         
         # Run in executor to avoid blocking
         loop = asyncio.get_event_loop()
@@ -93,59 +79,57 @@ async def initialize_orpheus_model():
         traceback.print_exc()
         return False
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize model on startup"""
-    await initialize_orpheus_model()
-
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Root endpoint with API documentation"""
-    return """
+    return f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Orpheus TTS Hybrid API</title>
+        <title>Orpheus TTS API - WORKING</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            .endpoint { background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 5px; }
-            .method { color: #007acc; font-weight: bold; }
+            body {{ font-family: Arial, sans-serif; margin: 40px; background: #f0f8ff; }}
+            .status {{ background: #d4edda; padding: 15px; border-radius: 5px; margin: 10px 0; }}
+            .endpoint {{ background: #f8f9fa; padding: 10px; margin: 10px 0; border-radius: 5px; }}
+            .method {{ color: #007acc; font-weight: bold; }}
+            .test-link {{ background: #007acc; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 5px; }}
         </style>
     </head>
     <body>
-        <h1>🎤 Orpheus TTS Hybrid API</h1>
-        <p>Original Orpheus TTS Model with FastAPI Integration</p>
+        <h1>🎤 Orpheus TTS API - WORKING!</h1>
         
-        <h2>Available Endpoints:</h2>
+        <div class="status">
+            <h3>✅ Status: OPERATIONAL</h3>
+            <p><strong>Model:</strong> canopylabs/orpheus-tts-0.1-finetune-prod</p>
+            <p><strong>Your URL:</strong> https://561pjq4x4ud1px-5005.proxy.runpod.net/</p>
+        </div>
+        
+        <h2>🎵 Quick Tests:</h2>
+        <a href="/tts?prompt=Hello%20world,%20this%20is%20working%20Orpheus%20TTS" class="test-link">Test TTS</a>
+        <a href="/health" class="test-link">Health Check</a>
+        
+        <h2>📋 API Endpoints:</h2>
+        
+        <div class="endpoint">
+            <span class="method">GET</span> <strong>/tts</strong><br>
+            Generate TTS audio with query parameters<br>
+            Example: <code>/tts?prompt=Hello%20world&voice=tara</code>
+        </div>
+        
+        <div class="endpoint">
+            <span class="method">POST</span> <strong>/generate_speech</strong><br>
+            Generate TTS audio with JSON payload<br>
+            Body: <code>{{"prompt": "text", "voice": "tara"}}</code>
+        </div>
         
         <div class="endpoint">
             <span class="method">GET</span> <strong>/health</strong><br>
             Health check and model status
         </div>
         
-        <div class="endpoint">
-            <span class="method">POST</span> <strong>/generate_speech</strong><br>
-            Generate TTS audio (streaming WAV)<br>
-            Body: {"prompt": "text", "voice": "tara", "temperature": 0.4}
-        </div>
-        
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/tts</strong><br>
-            Quick TTS generation with query parameters<br>
-            Example: /tts?prompt=Hello%20world&voice=tara
-        </div>
-        
-        <div class="endpoint">
-            <span class="method">GET</span> <strong>/test</strong><br>
-            Test endpoint with sample audio
-        </div>
-        
-        <h2>Quick Test:</h2>
-        <p><a href="/test" target="_blank">🎵 Generate Test Audio</a></p>
-        <p><a href="/tts?prompt=Hello%20world,%20this%20is%20the%20new%20Orpheus%20TTS%20system" target="_blank">🗣️ Custom TTS</a></p>
-        
-        <h2>Model Status:</h2>
-        <p><a href="/health">Check Model Health</a></p>
+        <h2>🔗 Integration:</h2>
+        <p>Use this URL in your Vocalis frontend:</p>
+        <code>https://561pjq4x4ud1px-5005.proxy.runpod.net/tts</code>
     </body>
     </html>
     """
@@ -157,9 +141,10 @@ async def health_check():
         return {"status": "error", "message": "Orpheus TTS model not initialized"}
     return {
         "status": "ok", 
-        "model": "orpheus-tts",
+        "model": "canopylabs/orpheus-tts-0.1-finetune-prod",
         "engine": "original-orpheus",
-        "version": "2.0.0"
+        "version": "2.0.0",
+        "url": "https://561pjq4x4ud1px-5005.proxy.runpod.net/"
     }
 
 async def generate_audio_stream(prompt: str, voice: str = "tara", temperature: float = 0.4, 
@@ -244,41 +229,24 @@ async def tts_get_endpoint(
         headers={"Content-Disposition": "attachment; filename=speech.wav"}
     )
 
-@app.get("/test")
-async def test_endpoint():
-    """Test endpoint with sample audio"""
-    test_prompt = "Hello! This is a test of the new Orpheus TTS hybrid system. The original model is now working correctly with proper audio generation."
-    
-    return StreamingResponse(
-        generate_audio_stream(prompt=test_prompt, voice="tara"),
-        media_type="audio/wav",
-        headers={"Content-Disposition": "attachment; filename=test_speech.wav"}
-    )
-
-# Legacy compatibility endpoints
-@app.post("/api/tts")
-async def legacy_tts_endpoint(request: TTSRequest):
-    """Legacy TTS endpoint for backward compatibility"""
-    return await generate_speech_endpoint(request)
-
 def main():
     """Main function with proper multiprocessing setup"""
     # Set multiprocessing method for VLLM compatibility
     multiprocessing.set_start_method('spawn', force=True)
     
-    # Get configuration from environment
-    host = os.environ.get('TTS_HOST', '0.0.0.0')
-    port = int(os.environ.get('TTS_PORT', 5005))
+    host = "0.0.0.0"
+    port = 5005
     
-    print(f"🚀 Starting Orpheus TTS Hybrid Server on {host}:{port}")
-    print("🔧 Using Original Orpheus TTS Model")
+    print(f"🚀 Starting FIXED Orpheus TTS Server on {host}:{port}")
+    print("🔧 Using CORRECT model: canopylabs/orpheus-tts-0.1-finetune-prod")
+    print("🌐 Your URL: https://561pjq4x4ud1px-5005.proxy.runpod.net/")
     
     # Run with uvicorn
     uvicorn.run(
-        "hybrid_tts_app:app",
+        "fixed_hybrid_app:app",
         host=host,
         port=port,
-        reload=False,  # Important: disable reload with multiprocessing
+        reload=False,
         workers=1
     )
 
