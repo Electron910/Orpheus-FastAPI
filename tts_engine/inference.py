@@ -176,8 +176,20 @@ AVAILABLE_LANGUAGES = ["english", "french", "german", "korean", "hindi", "mandar
 # Import the unified token handling from speechpipe
 from .speechpipe import turn_token_into_id, CUSTOM_TOKEN_PREFIX
 
-# Import enhanced emotion processing
-from .emotion_processor import emotion_processor
+# Import production-grade emotion processing
+try:
+    from .production_emotion_processor import production_emotion_processor
+    EMOTION_PROCESSING_AVAILABLE = True
+    print("🎭 Production-grade emotion processing loaded")
+except ImportError:
+    try:
+        from .emotion_processor import emotion_processor as production_emotion_processor
+        EMOTION_PROCESSING_AVAILABLE = True
+        print("🎭 Enhanced emotion processing loaded (fallback)")
+    except ImportError:
+        print("⚠️ Emotion processing not available - using basic emotion tags")
+        EMOTION_PROCESSING_AVAILABLE = False
+        production_emotion_processor = None
 
 # Special token IDs for Orpheus model
 START_TOKEN_ID = 128259
@@ -230,13 +242,26 @@ def format_prompt(prompt: str, voice: str = DEFAULT_VOICE) -> str:
         print(f"Warning: Voice '{voice}' not recognized. Using '{DEFAULT_VOICE}' instead.")
         voice = DEFAULT_VOICE
     
-    # Enhanced emotion processing for better accuracy
-    enhanced_prompt = emotion_processor.process_text(prompt, voice, add_contextual=True)
-    
-    # Show emotion processing results
-    emotion_stats = emotion_processor.get_emotion_stats(enhanced_prompt)
-    if emotion_stats:
-        print(f"🎭 Emotion processing: {emotion_stats}")
+    # Production-grade emotion processing for better accuracy (if available)
+    if EMOTION_PROCESSING_AVAILABLE and production_emotion_processor:
+        enhanced_prompt = production_emotion_processor.process_text(
+            prompt, 
+            voice, 
+            optimize_existing=True,
+            add_contextual=True,
+            max_contextual_additions=2
+        )
+        
+        # Show emotion processing results
+        emotion_stats = production_emotion_processor.get_emotion_statistics(enhanced_prompt)
+        if emotion_stats and emotion_stats.get("total_emotions", 0) > 0:
+            print(f"🎭 Production emotion processing: {emotion_stats['total_emotions']} emotions, "
+                  f"density: {emotion_stats['emotion_density']:.2f}, "
+                  f"supported: {emotion_stats['supported_emotions']}")
+            if emotion_stats.get("unsupported_emotions"):
+                print(f"⚠️ Unsupported emotions: {emotion_stats['unsupported_emotions']}")
+    else:
+        enhanced_prompt = prompt
         
     # Format similar to how engine_class.py does it with special tokens
     formatted_prompt = f"{voice}: {enhanced_prompt}"
