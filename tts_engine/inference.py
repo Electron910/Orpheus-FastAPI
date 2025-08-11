@@ -176,6 +176,9 @@ AVAILABLE_LANGUAGES = ["english", "french", "german", "korean", "hindi", "mandar
 # Import the unified token handling from speechpipe
 from .speechpipe import turn_token_into_id, CUSTOM_TOKEN_PREFIX
 
+# Import enhanced emotion processing
+from .emotion_processor import emotion_processor
+
 # Special token IDs for Orpheus model
 START_TOKEN_ID = 128259
 END_TOKEN_IDS = [128009, 128260, 128261, 128257]
@@ -226,9 +229,17 @@ def format_prompt(prompt: str, voice: str = DEFAULT_VOICE) -> str:
     if voice not in AVAILABLE_VOICES:
         print(f"Warning: Voice '{voice}' not recognized. Using '{DEFAULT_VOICE}' instead.")
         voice = DEFAULT_VOICE
+    
+    # Enhanced emotion processing for better accuracy
+    enhanced_prompt = emotion_processor.process_text(prompt, voice, add_contextual=True)
+    
+    # Show emotion processing results
+    emotion_stats = emotion_processor.get_emotion_stats(enhanced_prompt)
+    if emotion_stats:
+        print(f"🎭 Emotion processing: {emotion_stats}")
         
     # Format similar to how engine_class.py does it with special tokens
-    formatted_prompt = f"{voice}: {prompt}"
+    formatted_prompt = f"{voice}: {enhanced_prompt}"
     
     # Add special token markers for the Orpheus-FASTAPI
     special_start = "<|audio|>"  # Using the additional_special_token from config
@@ -871,8 +882,11 @@ def list_available_voices():
         print(f"{marker} {voice}")
     print(f"\nDefault voice: {DEFAULT_VOICE}")
     
-    print("\nAvailable emotion tags:")
-    print("<laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>")
+    print("\n🎭 Enhanced Emotion System:")
+    print("Basic emotions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>")
+    print("Intensity levels: <soft_laugh>, <laugh>, <hearty_laugh> (auto-selected based on context)")
+    print("Contextual emotions: Automatically added based on text content and voice compatibility")
+    print("Voice-optimized: Emotions are adjusted for each voice's characteristics")
 
 def main():
     # Parse command line arguments
