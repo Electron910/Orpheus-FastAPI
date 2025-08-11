@@ -142,8 +142,8 @@ MAX_CACHE_SIZE = 10000  # Increased cache size for better performance
 
 def turn_token_into_id(token_string, index):
     """
-    Fixed token-to-ID conversion that handles the actual model output.
-    The current model generates '>' tokens, so we convert them to valid audio IDs.
+    Optimized token-to-ID conversion with caching.
+    This is the definitive implementation used by both inference.py and speechpipe.py.
     
     Args:
         token_string: The token string to convert
@@ -152,55 +152,38 @@ def turn_token_into_id(token_string, index):
     Returns:
         int: Token ID if valid, None otherwise
     """
-    global token_id_cache
-    
-    # Check cache first
+    # Check cache first (significant speedup for repeated tokens)
     cache_key = (token_string, index % 7)
     if cache_key in token_id_cache:
         return token_id_cache[cache_key]
+        
+    # Early rejection for obvious non-matches
+    if CUSTOM_TOKEN_PREFIX not in token_string:
+        return None
+        
+    # Process token
+    token_string = token_string.strip()
+    last_token_start = token_string.rfind(CUSTOM_TOKEN_PREFIX)
     
-    # Clean cache if too large
-    if len(token_id_cache) > MAX_CACHE_SIZE:
-        token_id_cache.clear()
+    if last_token_start == -1:
+        return None
     
+    last_token = token_string[last_token_start:]
+    
+    if not (last_token.startswith(CUSTOM_TOKEN_PREFIX) and last_token.endswith(">")):
+        return None
+        
     try:
-        # Method 1: Handle custom_token format (original)
-        if token_string.startswith(CUSTOM_TOKEN_PREFIX) and token_string.endswith(">"):
-            number_str = token_string[14:-1]
-            token_id = int(number_str) - 10 - ((index % 7) * 4096)
-            if 0 <= token_id <= 4096:
-                token_id_cache[cache_key] = token_id
-                return token_id
+        number_str = last_token[14:-1]
+        token_id = int(number_str) - 10 - ((index % 7) * 4096)
         
-        # Method 2: Handle '>' tokens (current model output)
-        if token_string == '>':
-            # Generate valid audio token ID based on position
-            # Use a pattern that creates valid audio sequences
-            base_patterns = [100, 250, 400, 600, 800, 1000, 1200]  # Different frequency ranges
-            pattern_id = base_patterns[index % len(base_patterns)]
-            
-            # Add variation based on index to create audio progression
-            variation = (index // 7) * 50  # Change every frame (7 tokens)
-            token_id = (pattern_id + variation) % 4096
-            
+        # Cache the result if it's valid
+        if len(token_id_cache) < MAX_CACHE_SIZE:
             token_id_cache[cache_key] = token_id
-            return token_id
-        
-        # Method 3: Handle any other token format
-        # Generate deterministic but varied token IDs
-        import hashlib
-        hash_input = f"{token_string}_{index}".encode()
-        hash_hex = hashlib.md5(hash_input).hexdigest()[:4]
-        token_id = int(hash_hex, 16) % 4096
-        
-        token_id_cache[cache_key] = token_id
+            
         return token_id
-        
-    except Exception as e:
-        # Fallback: always return a valid ID
-        fallback_id = (index * 123 + 456) % 4096
-        token_id_cache[cache_key] = fallback_id
-        return fallback_id
+    except (ValueError, IndexError):
+        return None
 
 async def tokens_decoder(token_gen):
     """Optimized token decoder with early first-chunk processing for lower latency"""
