@@ -7,9 +7,6 @@ import queue
 import time
 import os
 import sys
-import io
-import wave
-import struct
 
 # Helper to detect if running in Uvicorn's reloader (same as in inference.py)
 def is_reloader_process():
@@ -59,6 +56,7 @@ if snac_device == "cuda":
     cuda_stream = torch.cuda.Stream()
     if not IS_RELOADER:
         print("Using CUDA stream for parallel processing")
+
 
 def convert_to_audio(multiframe, count):
     """
@@ -187,54 +185,19 @@ def turn_token_into_id(token_string, index):
     except (ValueError, IndexError):
         return None
 
-def create_wav_header(sample_rate=24000, channels=1, bits_per_sample=16):
-    """Create a WAV file header for streaming"""
-    # We'll set data length to maximum initially, then correct it if needed
-    data_length = 0xFFFFFFFF - 36  # Maximum size minus header
-    
-    header = bytearray()
-    
-    # RIFF header
-    header.extend(b'RIFF')
-    header.extend(struct.pack('<I', data_length + 36))  # File size - 8
-    header.extend(b'WAVE')
-    
-    # fmt subchunk
-    header.extend(b'fmt ')
-    header.extend(struct.pack('<I', 16))  # Subchunk size
-    header.extend(struct.pack('<H', 1))   # Audio format (PCM)
-    header.extend(struct.pack('<H', channels))
-    header.extend(struct.pack('<I', sample_rate))
-    header.extend(struct.pack('<I', sample_rate * channels * bits_per_sample // 8))  # Byte rate
-    header.extend(struct.pack('<H', channels * bits_per_sample // 8))  # Block align
-    header.extend(struct.pack('<H', bits_per_sample))
-    
-    # data subchunk header
-    header.extend(b'data')
-    header.extend(struct.pack('<I', data_length))
-    
-    return bytes(header)
-
-async def generate_audio_stream(token_gen):
-    """
-    NEW STREAMING FUNCTION: Generate audio chunks as they are ready
-    This replaces the blocking tokens_decoder approach
-    """
+async def tokens_decoder(token_gen):
+    """Optimized token decoder with early first-chunk processing for lower latency"""
     buffer = []
     count = 0
     
-    # Track if first chunk has been processed  
+    # Track if first chunk has been processed
     first_chunk_processed = False
     
     # Use different thresholds for first chunk vs. subsequent chunks
-    min_frames_first = 7  # Just one chunk (7 tokens) for first audio
-    min_frames_subsequent = 28  # Standard minimum after first audio
-    process_every_n = 7  # Process every 7 tokens
-    
-    # Yield WAV header first
-    wav_header = create_wav_header()
-    yield wav_header
-    print("Sent WAV header for streaming")
+    min_frames_first = 7  # Just one chunk (7 tokens) for first audio - ultra-low latency
+    min_frames_subsequent = 28  # Standard minimum (4 chunks of 7 tokens) after first audio
+    ideal_frames = 49  # Ideal standard frame size (7×7 window) - unchanged
+    process_every_n = 7  # Process every 7 tokens (standard for Orpheus model) - unchanged
     
     start_time = time.time()
     token_count = 0
@@ -243,13 +206,13 @@ async def generate_audio_stream(token_gen):
     async for token_sim in token_gen:
         token_count += 1
         
-        # Use the unified turn_token_into_id
+        # Use the unified turn_token_into_id which already handles caching
         token = turn_token_into_id(token_sim, count)
         
         if token is not None and token > 0:
             buffer.append(token)
             count += 1
-            
+
             # Log throughput periodically
             current_time = time.time()
             if current_time - last_log_time > 5.0:  # Every 5 seconds
@@ -267,23 +230,24 @@ async def generate_audio_stream(token_gen):
                 if count >= min_frames_first:
                     buffer_to_proc = buffer[-min_frames_first:]
                     
+                    # Process the first chunk of audio for immediate feedback
                     print(f"Processing first audio chunk with {len(buffer_to_proc)} tokens for low latency")
                     audio_samples = convert_to_audio(buffer_to_proc, count)
                     if audio_samples is not None:
-                        first_chunk_processed = True
+                        first_chunk_processed = True  # Mark first chunk as processed
                         yield audio_samples
             else:
-                # For subsequent chunks, use standard processing with proper batching
-                if count % process_every_n == 0 and count >= min_frames_subsequent:
-                    # Use standard processing logic  
-                    if len(buffer) >= 49:  # Ideal frames
-                        buffer_to_proc = buffer[-49:]
+                # For subsequent chunks, use original processing with proper batching
+                if count % process_every_n == 0:
+                    # Use same prioritization logic as before
+                    if len(buffer) >= ideal_frames:
+                        buffer_to_proc = buffer[-ideal_frames:]
                     elif len(buffer) >= min_frames_subsequent:
                         buffer_to_proc = buffer[-min_frames_subsequent:]
                     else:
                         continue
                     
-                    # Debug output
+                    # Debug output to help diagnose issues
                     if count % 28 == 0:
                         print(f"Processing buffer with {len(buffer_to_proc)} tokens, total collected: {len(buffer)}")
                     
@@ -292,78 +256,113 @@ async def generate_audio_stream(token_gen):
                     if audio_samples is not None:
                         yield audio_samples
     
-    # Process remaining complete frames at the end
-    if len(buffer) >= 49:
-        buffer_to_proc = buffer[-49:]
+    # CRITICAL: End-of-generation handling - process all remaining frames
+    # Process remaining complete frames (ideal size)
+    if len(buffer) >= ideal_frames:
+        buffer_to_proc = buffer[-ideal_frames:]
         audio_samples = convert_to_audio(buffer_to_proc, count)
         if audio_samples is not None:
             yield audio_samples
+            
+    # Process any additional complete frames (minimum size)
     elif len(buffer) >= min_frames_subsequent:
         buffer_to_proc = buffer[-min_frames_subsequent:]
         audio_samples = convert_to_audio(buffer_to_proc, count)
         if audio_samples is not None:
             yield audio_samples
+            
+    # Final special case: even if we don't have minimum frames, try to process
+    # what we have by padding with silence tokens that won't affect the audio
     elif len(buffer) >= process_every_n:
-        # Pad final partial frame
+        # Pad to minimum frame requirement with copies of the final token
+        # This is more continuous than using unrelated tokens from the beginning
         last_token = buffer[-1]
         padding_needed = min_frames_subsequent - len(buffer)
+        
+        # Create a padding array of copies of the last token
+        # This maintains continuity much better than circular buffering
         padding = [last_token] * padding_needed
         padded_buffer = buffer + padding
         
-        print(f"Processing final partial frame: {len(buffer)} tokens + {padding_needed} padding")
+        print(f"Processing final partial frame: {len(buffer)} tokens + {padding_needed} repeated-token padding")
         audio_samples = convert_to_audio(padded_buffer, count)
         if audio_samples is not None:
             yield audio_samples
-
-# Legacy compatibility functions
-async def tokens_decoder(token_gen):
-    """Legacy compatibility - redirects to streaming function"""
-    async for chunk in generate_audio_stream(token_gen):
-        if len(chunk) > 44:  # Skip WAV header for legacy compatibility
-            yield chunk[44:] if chunk.startswith(b'RIFF') else chunk
-
-def tokens_decoder_sync(syn_token_gen, output_file=None):
-    """
-    Optimized synchronous decoder with optional file output
-    Now supports streaming while optionally saving to file
-    """
-    # Convert sync generator to async
+# ------------------ Synchronous Tokens Decoder Wrapper ------------------ #
+def tokens_decoder_sync(syn_token_gen):
+    """Optimized synchronous decoder with larger queue and parallel processing"""
+    # Use a larger queue for RTX 4090 to maximize GPU utilization
+    max_queue_size = 32 if snac_device == "cuda" else 8
+    audio_queue = queue.Queue(maxsize=max_queue_size)
+    
+    # Collect tokens in batches for higher throughput
+    batch_size = 16 if snac_device == "cuda" else 4
+    
+    # Convert the synchronous token generator into an async generator with batching
     async def async_token_gen():
+        token_batch = []
         for token in syn_token_gen:
-            yield token
+            token_batch.append(token)
+            # Process in batches for efficiency
+            if len(token_batch) >= batch_size:
+                for t in token_batch:
+                    yield t
+                token_batch = []
+        # Process any remaining tokens
+        for t in token_batch:
+            yield t
 
-    # Setup file writing if requested
-    wav_file = None
-    if output_file:
-        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-        wav_file = wave.open(output_file, "wb")
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(24000)
+    async def async_producer():
+        # Start timer for performance logging
+        start_time = time.time()
+        chunk_count = 0
+        
+        try:
+            # Process audio chunks from the token decoder
+            async for audio_chunk in tokens_decoder(async_token_gen()):
+                if audio_chunk:  # Validate audio chunk before adding to queue
+                    audio_queue.put(audio_chunk)
+                    chunk_count += 1
+                    
+                    # Log performance stats periodically
+                    if chunk_count % 10 == 0:
+                        elapsed = time.time() - start_time
+                        print(f"Generated {chunk_count} chunks in {elapsed:.2f}s ({chunk_count/elapsed:.2f} chunks/sec)")
+        except Exception as e:
+            print(f"Error in audio producer: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:    
+            # Signal completion
+            print("Audio producer completed - finalizing all chunks")
+            audio_queue.put(None)  # Sentinel
+
+    def run_async():
+        asyncio.run(async_producer())
+
+    # Use a higher priority thread for RTX 4090 to ensure it stays fed with work
+    thread = threading.Thread(target=run_async)
+    thread.daemon = True  # Allow the thread to be terminated when the main thread exits
+    thread.start()
+
+    # Use larger buffer for final audio assembly
+    buffer_size = 5
+    audio_buffer = []
     
-    audio_segments = []
+    while True:
+        audio = audio_queue.get()
+        if audio is None:
+            break
+        
+        audio_buffer.append(audio)
+        # Yield buffered audio chunks for smoother playback
+        if len(audio_buffer) >= buffer_size:
+            for chunk in audio_buffer:
+                yield chunk
+            audio_buffer = []
     
-    async def process_audio():
-        header_written = False
-        async for audio_chunk in generate_audio_stream(async_token_gen()):
-            if not header_written and audio_chunk.startswith(b'RIFF'):
-                # Skip header for return value but keep for file
-                header_written = True
-                if wav_file:
-                    # Write just the audio data part to wav file
-                    continue
-            else:
-                # This is audio data
-                audio_segments.append(audio_chunk)
-                if wav_file:
-                    wav_file.writeframes(audio_chunk)
-    
-    # Run the async processing
-    asyncio.run(process_audio())
-    
-    # Close file if opened
-    if wav_file:
-        wav_file.close()
-        print(f"Audio saved to {output_file}")
-    
-    return audio_segments
+    # Yield any remaining audio in the buffer
+    for chunk in audio_buffer:
+        yield chunk
+
+    thread.join()
