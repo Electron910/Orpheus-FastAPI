@@ -41,13 +41,13 @@ ensure_env_file_exists()
 load_dotenv(override=True)
 
 from fastapi import FastAPI, Request, Form, HTTPException, Depends
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import json
 
-from tts_engine import generate_speech_from_api, AVAILABLE_VOICES, DEFAULT_VOICE, VOICE_TO_LANGUAGE, AVAILABLE_LANGUAGES
+from tts_engine import generate_speech_from_api, generate_speech_streaming, AVAILABLE_VOICES, DEFAULT_VOICE, VOICE_TO_LANGUAGE, AVAILABLE_LANGUAGES
 
 # Create FastAPI app
 app = FastAPI(
@@ -125,6 +125,36 @@ async def create_speech_api(request: SpeechRequest):
         media_type="audio/wav",
         filename=f"{request.voice}_{timestamp}.wav"
     )
+
+# Streaming endpoint for real-time audio chunking
+@app.post("/v1/audio/speech/stream")
+async def stream_speech_api(request: SpeechRequest):
+    """
+    Real-time streaming TTS endpoint that yields PCM16 mono 24kHz chunks.
+    Compatible with HTTP chunked transfer consumers.
+    """
+    if not request.input:
+        raise HTTPException(status_code=400, detail="Missing input text")
+
+    async def audio_iter():
+        async for chunk in generate_speech_streaming(
+            prompt=request.input,
+            voice=request.voice,
+            temperature=1.0 if request.model == "orpheus" else 0.6,
+            top_p=0.9,
+        ):
+            yield chunk
+
+    # Raw PCM stream (16-bit). Clients should know SAMPLE_RATE to play.
+    headers = {
+        # Hint clients that this is a stream
+        "Transfer-Encoding": "chunked",
+        # Provide sample rate metadata (non-standard header for convenience)
+        "X-Audio-Sample-Rate": str(int(os.environ.get("ORPHEUS_SAMPLE_RATE", "24000"))),
+        "X-Audio-Codec": "pcm_s16le",
+        "X-Audio-Channels": "1",
+    }
+    return StreamingResponse(audio_iter(), media_type="audio/L16", headers=headers)
 
 @app.get("/v1/audio/voices")
 async def list_voices():
