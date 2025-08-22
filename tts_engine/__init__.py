@@ -1,5 +1,6 @@
 from .inference import (
     generate_speech_from_api,
+    generate_speech_streaming,
     AVAILABLE_VOICES,
     DEFAULT_VOICE,
     VOICE_TO_LANGUAGE,
@@ -20,9 +21,9 @@ except ImportError:
         production_emotion_processor = None
 
 try:
-    __all__ = ['generate_speech_from_api', 'AVAILABLE_VOICES', 'DEFAULT_VOICE', 
+    __all__ = ['generate_speech_from_api', 'generate_speech_streaming', 'AVAILABLE_VOICES', 'DEFAULT_VOICE', 
                'VOICE_TO_LANGUAGE', 'AVAILABLE_LANGUAGES', 'list_available_voices', 
                'production_emotion_processor']
 except ImportError:
-    __all__ = ['generate_speech_from_api', 'AVAILABLE_VOICES', 'DEFAULT_VOICE', 
+    __all__ = ['generate_speech_from_api', 'generate_speech_streaming', 'AVAILABLE_VOICES', 'DEFAULT_VOICE', 
                'VOICE_TO_LANGUAGE', 'AVAILABLE_LANGUAGES', 'list_available_voices']
