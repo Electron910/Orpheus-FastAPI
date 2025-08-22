@@ -651,11 +651,15 @@ async def generate_speech_streaming(
     top_p: float = TOP_P,
     max_tokens: int = MAX_TOKENS,
     repetition_penalty: float = REPETITION_PENALTY,
+    output_format: str = "wav"
 ):
     """
-    Generate speech as a real-time async stream of PCM16 mono 24kHz audio bytes.
-
-    Yields small audio chunks suitable for HTTP chunked transfer or WebSocket streaming.
+    Generate speech as a real-time async stream.
+    
+    Args:
+        output_format: "wav" for WAV chunks, "pcm" for raw PCM16
+    
+    Yields audio chunks suitable for HTTP chunked transfer or WebSocket streaming.
     """
     # Reset performance monitor for a fresh session
     global perf_monitor
@@ -671,11 +675,55 @@ async def generate_speech_streaming(
         repetition_penalty=repetition_penalty,
     )
 
+    wav_header_sent = False
+    accumulated_audio = bytearray()
+    
     # Wrap it as async and feed into the low-latency decoder
     async for audio_chunk in tokens_decoder(_async_token_gen_from_sync(syn_token_gen)):
         if audio_chunk:
-            # audio_chunk is raw PCM16 bytes (mono, SAMPLE_RATE)
-            yield audio_chunk
+            if output_format == "wav":
+                accumulated_audio.extend(audio_chunk)
+                
+                # Send WAV header on first chunk
+                if not wav_header_sent:
+                    wav_header = _create_wav_header(len(accumulated_audio))
+                    yield wav_header
+                    wav_header_sent = True
+                
+                # Yield the audio chunk
+                yield audio_chunk
+            else:
+                # Raw PCM16 bytes (mono, SAMPLE_RATE)
+                yield audio_chunk
+
+def _create_wav_header(data_size=0):
+    """Create a WAV header for streaming. Use 0 for unknown size."""
+    import struct
+    
+    # WAV header format
+    header = bytearray(44)
+    
+    # RIFF header
+    header[0:4] = b'RIFF'
+    # File size (will be updated later, use max for streaming)
+    struct.pack_into('<I', header, 4, 0xFFFFFFFF if data_size == 0 else 36 + data_size)
+    header[8:12] = b'WAVE'
+    
+    # fmt subchunk
+    header[12:16] = b'fmt '
+    struct.pack_into('<I', header, 16, 16)  # Subchunk1Size
+    struct.pack_into('<H', header, 20, 1)   # AudioFormat (PCM)
+    struct.pack_into('<H', header, 22, 1)   # NumChannels (mono)
+    struct.pack_into('<I', header, 24, SAMPLE_RATE)  # SampleRate
+    struct.pack_into('<I', header, 28, SAMPLE_RATE * 2)  # ByteRate
+    struct.pack_into('<H', header, 32, 2)   # BlockAlign
+    struct.pack_into('<H', header, 34, 16)  # BitsPerSample
+    
+    # data subchunk
+    header[36:40] = b'data'
+    struct.pack_into('<I', header, 40, 0xFFFFFFFF if data_size == 0 else data_size)
+    
+    return bytes(header)
 
 def stream_audio(audio_buffer):
     """Stream audio buffer to output device with error handling."""
