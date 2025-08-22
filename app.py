@@ -142,19 +142,16 @@ async def stream_speech_api(request: SpeechRequest):
             voice=request.voice,
             temperature=1.0 if request.model == "orpheus" else 0.6,
             top_p=0.9,
+            output_format="wav"
         ):
             yield chunk
 
-    # Raw PCM stream (16-bit). Clients should know SAMPLE_RATE to play.
+    # WAV stream with proper headers for browser compatibility
     headers = {
-        # Hint clients that this is a stream
         "Transfer-Encoding": "chunked",
-        # Provide sample rate metadata (non-standard header for convenience)
-        "X-Audio-Sample-Rate": str(int(os.environ.get("ORPHEUS_SAMPLE_RATE", "24000"))),
-        "X-Audio-Codec": "pcm_s16le",
-        "X-Audio-Channels": "1",
+        "Cache-Control": "no-cache",
     }
-    return StreamingResponse(audio_iter(), media_type="audio/L16", headers=headers)
+    return StreamingResponse(audio_iter(), media_type="audio/wav", headers=headers)
 
 @app.get("/v1/audio/voices")
 async def list_voices():
