@@ -45,13 +45,16 @@ ensure_env_file_exists()
 load_dotenv(override=True)
 
 from fastapi import FastAPI, Request, Form, HTTPException, Depends
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import json
 
 from tts_engine import generate_speech_from_api, AVAILABLE_VOICES, DEFAULT_VOICE, VOICE_TO_LANGUAGE, AVAILABLE_LANGUAGES
+# Import the new streaming function
+from tts_engine.speechpipe import generate_audio_stream
+from tts_engine.inference import generate_tokens_from_api
 
 # Create FastAPI app
 app = FastAPI(
@@ -59,10 +62,6 @@ app = FastAPI(
     description="High-performance Text-to-Speech server using Orpheus-FASTAPI",
     version="1.0.0"
 )
-
-# We'll use FastAPI's built-in startup complete mechanism
-# The log message "INFO:     Application startup complete." indicates
-# that the application is ready
 
 # Ensure directories exist
 os.makedirs("outputs", exist_ok=True)
@@ -89,15 +88,74 @@ class APIResponse(BaseModel):
     output_file: str
     generation_time: float
 
-# OpenAI-compatible API endpoint
+# NEW STREAMING ENDPOINT - OpenAI-compatible with chunked streaming
 @app.post("/v1/audio/speech")
-async def create_speech_api(request: SpeechRequest):
+async def create_speech_api_streaming(request: SpeechRequest):
     """
-    Generate speech from text using the Orpheus TTS model.
-    Compatible with OpenAI's /v1/audio/speech endpoint.
+    STREAMING VERSION: Generate speech from text using Orpheus TTS with real-time streaming.
+    Compatible with OpenAI's /v1/audio/speech endpoint but with chunked streaming support.
     
-    For longer texts (>1000 characters), batched generation is used
-    to improve reliability and avoid truncation issues.
+    Audio starts playing immediately as chunks are generated.
+    """
+    if not request.input:
+        raise HTTPException(status_code=400, detail="Missing input text")
+    
+    print(f"Starting streaming TTS generation for: '{request.input[:50]}{'...' if len(request.input) > 50 else ''}'")
+    print(f"Voice: {request.voice}")
+    
+    # Create async generator for tokens
+    async def async_token_gen():
+        # Get synchronous token generator  
+        sync_gen = generate_tokens_from_api(
+            prompt=request.input,
+            voice=request.voice,
+            temperature=float(os.environ.get("ORPHEUS_TEMPERATURE", "0.6")),
+            top_p=float(os.environ.get("ORPHEUS_TOP_P", "0.9")),
+            max_tokens=int(os.environ.get("ORPHEUS_MAX_TOKENS", "8192")),
+            repetition_penalty=1.1  # Hardcoded optimal value
+        )
+        
+        # Convert to async
+        for token in sync_gen:
+            yield token
+    
+    # Create streaming audio generator
+    async def stream_audio_response():
+        """Generator that yields audio chunks for streaming response"""
+        try:
+            print("Starting audio chunk generation...")
+            chunk_count = 0
+            
+            async for audio_chunk in generate_audio_stream(async_token_gen()):
+                chunk_count += 1
+                if chunk_count <= 3:  # Log first few chunks
+                    print(f"Yielding audio chunk #{chunk_count}, size: {len(audio_chunk)} bytes")
+                yield audio_chunk
+                
+            print(f"Completed streaming response with {chunk_count} chunks")
+                
+        except Exception as e:
+            print(f"Error in streaming audio generation: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Return StreamingResponse for real-time audio
+    return StreamingResponse(
+        stream_audio_response(),
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{request.voice}_{int(time.time())}.wav\"",
+            "Transfer-Encoding": "chunked",
+            "Cache-Control": "no-cache"
+        }
+    )
+
+# ORIGINAL NON-STREAMING ENDPOINT (for compatibility/file saving)
+@app.post("/v1/audio/speech/file")
+async def create_speech_api_file(request: SpeechRequest):
+    """
+    Original file-based generation (for compatibility).
+    Use this if you need to save files to disk or want the old behavior.
     """
     if not request.input:
         raise HTTPException(status_code=400, detail="Missing input text")
@@ -142,10 +200,55 @@ async def list_voices():
         }
     )
 
-# Legacy API endpoint for compatibility
+# STREAMING LEGACY API ENDPOINT
 @app.post("/speak")
-async def speak(request: Request):
-    """Legacy endpoint for compatibility with existing clients"""
+async def speak_streaming(request: Request):
+    """
+    STREAMING VERSION of legacy endpoint
+    """
+    data = await request.json()
+    text = data.get("text", "")
+    voice = data.get("voice", DEFAULT_VOICE)
+
+    if not text:
+        return JSONResponse(
+            status_code=400, 
+            content={"error": "Missing 'text'"}
+        )
+
+    print(f"Legacy streaming endpoint called with voice: {voice}")
+    
+    # Create async generator for tokens
+    async def async_token_gen():
+        sync_gen = generate_tokens_from_api(
+            prompt=text,
+            voice=voice,
+            temperature=float(os.environ.get("ORPHEUS_TEMPERATURE", "0.6")),
+            top_p=float(os.environ.get("ORPHEUS_TOP_P", "0.9")),
+            max_tokens=int(os.environ.get("ORPHEUS_MAX_TOKENS", "8192")),
+            repetition_penalty=1.1
+        )
+        for token in sync_gen:
+            yield token
+    
+    # Create streaming audio generator
+    async def stream_audio_response():
+        async for audio_chunk in generate_audio_stream(async_token_gen()):
+            yield audio_chunk
+    
+    return StreamingResponse(
+        stream_audio_response(),
+        media_type="audio/wav",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"{voice}_{int(time.time())}.wav\"",
+            "Cache-Control": "no-cache"
+        }
+    )
+
+# NON-STREAMING LEGACY API ENDPOINT (for file saving)
+@app.post("/speak/file")
+async def speak_file(request: Request):
+    """Legacy endpoint with file output (original behavior)"""
     data = await request.json()
     text = data.get("text", "")
     voice = data.get("voice", DEFAULT_VOICE)
@@ -231,7 +334,7 @@ async def save_config(request: Request):
                 data[key] = str(int(value))
             except (ValueError, TypeError):
                 pass
-        elif key in ["ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P"]:  # Removed ORPHEUS_REPETITION_PENALTY since it's hardcoded now
+        elif key in ["ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P"]:
             try:
                 data[key] = str(float(value))
             except (ValueError, TypeError):
@@ -382,6 +485,8 @@ if __name__ == "__main__":
     print(f"🔥 Starting Orpheus-FASTAPI Server on {host}:{port}")
     print(f"💬 Web UI available at http://{host if host != '0.0.0.0' else 'localhost'}:{port}")
     print(f"📖 API docs available at http://{host if host != '0.0.0.0' else 'localhost'}:{port}/docs")
+    print(f"🚀 STREAMING TTS available at /v1/audio/speech (real-time)")
+    print(f"💾 FILE TTS available at /v1/audio/speech/file (saves to disk)")
     
     # Read current API_URL for user information
     api_url = os.environ.get("ORPHEUS_API_URL")
