@@ -637,6 +637,46 @@ def tokens_decoder_sync(syn_token_gen, output_file=None):
     
     return audio_segments
 
+async def _async_token_gen_from_sync(syn_token_gen):
+    """Adapt a synchronous token generator to an async generator."""
+    for token in syn_token_gen:
+        # Yield control to the event loop to avoid blocking
+        await asyncio.sleep(0)
+        yield token
+
+async def generate_speech_streaming(
+    prompt: str,
+    voice: str = DEFAULT_VOICE,
+    temperature: float = TEMPERATURE,
+    top_p: float = TOP_P,
+    max_tokens: int = MAX_TOKENS,
+    repetition_penalty: float = REPETITION_PENALTY,
+):
+    """
+    Generate speech as a real-time async stream of PCM16 mono 24kHz audio bytes.
+
+    Yields small audio chunks suitable for HTTP chunked transfer or WebSocket streaming.
+    """
+    # Reset performance monitor for a fresh session
+    global perf_monitor
+    perf_monitor = PerformanceMonitor()
+
+    # Create the synchronous token generator from the API
+    syn_token_gen = generate_tokens_from_api(
+        prompt=prompt,
+        voice=voice,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        repetition_penalty=repetition_penalty,
+    )
+
+    # Wrap it as async and feed into the low-latency decoder
+    async for audio_chunk in tokens_decoder(_async_token_gen_from_sync(syn_token_gen)):
+        if audio_chunk:
+            # audio_chunk is raw PCM16 bytes (mono, SAMPLE_RATE)
+            yield audio_chunk
+
 def stream_audio(audio_buffer):
     """Stream audio buffer to output device with error handling."""
     if audio_buffer is None or len(audio_buffer) == 0:
