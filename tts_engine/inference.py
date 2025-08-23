@@ -657,19 +657,23 @@ async def generate_speech_streaming(
     top_p: float = TOP_P,
     max_tokens: int = MAX_TOKENS,
     repetition_penalty: float = REPETITION_PENALTY,
-    output_format: str = "wav"
+    output_format: str = "wav",
+    cancel_event: asyncio.Event = None
 ):
     """
-    Generate speech as a real-time async stream.
+    Generate speech as a real-time async stream with cancellation support.
     
     Args:
         output_format: "wav" for WAV chunks, "pcm" for raw PCM16
+        cancel_event: Event to signal cancellation
     
     Yields audio chunks suitable for HTTP chunked transfer or WebSocket streaming.
     """
     # Reset performance monitor for a fresh session
     global perf_monitor
     perf_monitor = PerformanceMonitor()
+
+    print(f"Generating speech for: <|audio|>{voice}: {prompt[:100]}{'...' if len(prompt) > 100 else ''}<|eot_id|>")
 
     # Create the synchronous token generator from the API
     syn_token_gen = generate_tokens_from_api(
@@ -684,23 +688,35 @@ async def generate_speech_streaming(
     wav_header_sent = False
     accumulated_audio = bytearray()
     
-    # Wrap it as async and feed into the low-latency decoder
-    async for audio_chunk in tokens_decoder(_async_token_gen_from_sync(syn_token_gen)):
-        if audio_chunk:
-            if output_format == "wav":
-                accumulated_audio.extend(audio_chunk)
+    try:
+        # Wrap it as async and feed into the low-latency decoder
+        async for audio_chunk in tokens_decoder(_async_token_gen_from_sync(syn_token_gen)):
+            # Check for cancellation
+            if cancel_event and cancel_event.is_set():
+                print("🛑 TTS generation cancelled by user interrupt")
+                break
                 
-                # Send WAV header on first chunk
-                if not wav_header_sent:
-                    wav_header = _create_wav_header(len(accumulated_audio))
-                    yield wav_header
-                    wav_header_sent = True
-                
-                # Yield the audio chunk
-                yield audio_chunk
-            else:
-                # Raw PCM16 bytes (mono, SAMPLE_RATE)
-                yield audio_chunk
+            if audio_chunk:
+                if output_format == "wav":
+                    accumulated_audio.extend(audio_chunk)
+                    
+                    # Send WAV header on first chunk
+                    if not wav_header_sent:
+                        wav_header = _create_wav_header(len(accumulated_audio))
+                        yield wav_header
+                        wav_header_sent = True
+                    
+                    # Yield the audio chunk
+                    yield audio_chunk
+                else:
+                    # Raw PCM16 bytes (mono, SAMPLE_RATE)
+                    yield audio_chunk
+    except asyncio.CancelledError:
+        print("🛑 TTS generation cancelled via asyncio")
+        raise
+    except Exception as e:
+        print(f"❌ Error in TTS streaming: {e}")
+        raise
 
 def _create_wav_header(data_size=0):
     """Create a WAV header for streaming. Use 0 for unknown size."""
