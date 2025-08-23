@@ -131,20 +131,28 @@ async def create_speech_api(request: SpeechRequest):
 async def stream_speech_api(request: SpeechRequest):
     """
     Real-time streaming TTS endpoint that yields PCM16 mono 24kHz chunks.
-    Compatible with HTTP chunked transfer consumers.
+    Compatible with HTTP chunked transfer consumers with cancellation support.
     """
     if not request.input:
         raise HTTPException(status_code=400, detail="Missing input text")
 
+    # Create cancellation event for this request
+    cancel_event = asyncio.Event()
+    
     async def audio_iter():
-        async for chunk in generate_speech_streaming(
-            prompt=request.input,
-            voice=request.voice,
-            temperature=1.0 if request.model == "orpheus" else 0.6,
-            top_p=0.9,
-            output_format="wav"
-        ):
-            yield chunk
+        try:
+            async for chunk in generate_speech_streaming(
+                prompt=request.input,
+                voice=request.voice,
+                temperature=1.0 if request.model == "orpheus" else 0.6,
+                top_p=0.9,
+                output_format="wav",
+                cancel_event=cancel_event
+            ):
+                yield chunk
+        except asyncio.CancelledError:
+            print("🛑 Streaming request cancelled")
+            raise
 
     # WAV stream with proper headers for browser compatibility
     headers = {
