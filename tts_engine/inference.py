@@ -163,7 +163,7 @@ AVAILABLE_VOICES = (
     SPANISH_VOICES + 
     ITALIAN_VOICES
 )
-DEFAULT_VOICE = "tara"  # Best voice according to documentation
+DEFAULT_VOICE = "ऋतिका"  # Hindi female voice with expressive Indian accent
 
 # Map voices to languages for the UI
 VOICE_TO_LANGUAGE = {}
