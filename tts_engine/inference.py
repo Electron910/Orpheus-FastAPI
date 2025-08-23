@@ -147,7 +147,7 @@ ENGLISH_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
 FRENCH_VOICES = ["pierre", "amelie", "marie"]
 GERMAN_VOICES = ["jana", "thomas", "max"]
 KOREAN_VOICES = ["유나", "준서"]
-HINDI_VOICES = ["ऋतिका"]
+HINDI_VOICES = ["ऋतिका", "ritika"]  # Support both Unicode and ASCII versions
 MANDARIN_VOICES = ["长乐", "白芷"]
 SPANISH_VOICES = ["javi", "sergio", "maria"]
 ITALIAN_VOICES = ["pietro", "giulia", "carlo"]
@@ -245,8 +245,11 @@ def format_prompt(prompt: str, voice: str = DEFAULT_VOICE) -> str:
     """Format prompt for Orpheus model with voice prefix and special tokens."""
     # Validate voice and provide fallback
     if voice not in AVAILABLE_VOICES:
-        print(f"Warning: Voice '{voice}' not recognized. Using '{DEFAULT_VOICE}' instead.")
+        print(f"⚠️ Warning: Voice '{voice}' not recognized. Available voices: {AVAILABLE_VOICES}")
+        print(f"Using '{DEFAULT_VOICE}' instead.")
         voice = DEFAULT_VOICE
+    else:
+        print(f"✅ Using voice: '{voice}'")
     
     # Production-grade emotion processing for better accuracy (if available)
     if EMOTION_PROCESSING_AVAILABLE and production_emotion_processor:
@@ -284,6 +287,9 @@ def generate_tokens_from_api(prompt: str, voice: str = DEFAULT_VOICE, temperatur
     """Generate tokens from text using OpenAI-compatible API with optimized streaming and retry logic."""
     start_time = time.time()
     formatted_prompt = format_prompt(prompt, voice)
+    print(f"🎯 DEBUG: Voice parameter received: '{voice}'")
+    print(f"🎯 DEBUG: Available voices: {AVAILABLE_VOICES}")
+    print(f"🎯 DEBUG: Voice in available list: {voice in AVAILABLE_VOICES}")
     print(f"Generating speech for: {formatted_prompt}")
     
     # Optimize the token generation for GPUs
