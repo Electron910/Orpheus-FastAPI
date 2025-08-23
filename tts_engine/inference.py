@@ -124,6 +124,10 @@ except (ValueError, TypeError):
     print("WARNING: Invalid ORPHEUS_SAMPLE_RATE value, using 24000 as fallback")
     SAMPLE_RATE = 24000
 
+# Audio chunk optimization for real-time streaming
+CHUNK_SIZE_TOKENS = 28  # Optimal token batch size for streaming
+AUDIO_BUFFER_SIZE = 4800  # ~0.1s of 24kHz 16-bit mono audio
+
 # Print loaded configuration only in the main process, not in the reloader
 if not IS_RELOADER:
     print(f"Configuration loaded:")
@@ -133,8 +137,10 @@ if not IS_RELOADER:
     print(f"  TOP_P: {TOP_P}")
     print(f"  REPETITION_PENALTY: {REPETITION_PENALTY}")
 
-# Parallel processing settings
-NUM_WORKERS = 4 if HIGH_END_GPU else 2
+# Parallel processing settings - optimized for real-time streaming
+NUM_WORKERS = 6 if HIGH_END_GPU else 3
+STREAM_CHUNK_SIZE = 210  # 30 groups * 7 tokens for SNAC processing
+INITIAL_CHUNK_SIZE = 70  # Smaller initial chunk for faster first audio
 
 # Define voices by language
 ENGLISH_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
