@@ -147,7 +147,7 @@ ENGLISH_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
 FRENCH_VOICES = ["pierre", "amelie", "marie"]
 GERMAN_VOICES = ["jana", "thomas", "max"]
 KOREAN_VOICES = ["유나", "준서"]
-HINDI_VOICES = ["ऋतिका", "ritika"]  # Support both Unicode and ASCII versions
+HINDI_VOICES = ["ऋतिका"]
 MANDARIN_VOICES = ["长乐", "白芷"]
 SPANISH_VOICES = ["javi", "sergio", "maria"]
 ITALIAN_VOICES = ["pietro", "giulia", "carlo"]
@@ -163,7 +163,7 @@ AVAILABLE_VOICES = (
     SPANISH_VOICES + 
     ITALIAN_VOICES
 )
-DEFAULT_VOICE = "ऋतिका"  # Hindi female voice with expressive Indian accent
+DEFAULT_VOICE = "tara"  # Best voice according to documentation
 
 # Map voices to languages for the UI
 VOICE_TO_LANGUAGE = {}
@@ -245,11 +245,8 @@ def format_prompt(prompt: str, voice: str = DEFAULT_VOICE) -> str:
     """Format prompt for Orpheus model with voice prefix and special tokens."""
     # Validate voice and provide fallback
     if voice not in AVAILABLE_VOICES:
-        print(f"⚠️ Warning: Voice '{voice}' not recognized. Available voices: {AVAILABLE_VOICES}")
-        print(f"Using '{DEFAULT_VOICE}' instead.")
+        print(f"Warning: Voice '{voice}' not recognized. Using '{DEFAULT_VOICE}' instead.")
         voice = DEFAULT_VOICE
-    else:
-        print(f"✅ Using voice: '{voice}'")
     
     # Production-grade emotion processing for better accuracy (if available)
     if EMOTION_PROCESSING_AVAILABLE and production_emotion_processor:
@@ -287,9 +284,6 @@ def generate_tokens_from_api(prompt: str, voice: str = DEFAULT_VOICE, temperatur
     """Generate tokens from text using OpenAI-compatible API with optimized streaming and retry logic."""
     start_time = time.time()
     formatted_prompt = format_prompt(prompt, voice)
-    print(f"🎯 DEBUG: Voice parameter received: '{voice}'")
-    print(f"🎯 DEBUG: Available voices: {AVAILABLE_VOICES}")
-    print(f"🎯 DEBUG: Voice in available list: {voice in AVAILABLE_VOICES}")
     print(f"Generating speech for: {formatted_prompt}")
     
     # Optimize the token generation for GPUs
@@ -663,23 +657,19 @@ async def generate_speech_streaming(
     top_p: float = TOP_P,
     max_tokens: int = MAX_TOKENS,
     repetition_penalty: float = REPETITION_PENALTY,
-    output_format: str = "wav",
-    cancel_event: asyncio.Event = None
+    output_format: str = "wav"
 ):
     """
-    Generate speech as a real-time async stream with cancellation support.
+    Generate speech as a real-time async stream.
     
     Args:
         output_format: "wav" for WAV chunks, "pcm" for raw PCM16
-        cancel_event: Event to signal cancellation
     
     Yields audio chunks suitable for HTTP chunked transfer or WebSocket streaming.
     """
     # Reset performance monitor for a fresh session
     global perf_monitor
     perf_monitor = PerformanceMonitor()
-
-    print(f"Generating speech for: <|audio|>{voice}: {prompt[:100]}{'...' if len(prompt) > 100 else ''}<|eot_id|>")
 
     # Create the synchronous token generator from the API
     syn_token_gen = generate_tokens_from_api(
@@ -694,35 +684,23 @@ async def generate_speech_streaming(
     wav_header_sent = False
     accumulated_audio = bytearray()
     
-    try:
-        # Wrap it as async and feed into the low-latency decoder
-        async for audio_chunk in tokens_decoder(_async_token_gen_from_sync(syn_token_gen)):
-            # Check for cancellation
-            if cancel_event and cancel_event.is_set():
-                print("🛑 TTS generation cancelled by user interrupt")
-                break
+    # Wrap it as async and feed into the low-latency decoder
+    async for audio_chunk in tokens_decoder(_async_token_gen_from_sync(syn_token_gen)):
+        if audio_chunk:
+            if output_format == "wav":
+                accumulated_audio.extend(audio_chunk)
                 
-            if audio_chunk:
-                if output_format == "wav":
-                    accumulated_audio.extend(audio_chunk)
-                    
-                    # Send WAV header on first chunk
-                    if not wav_header_sent:
-                        wav_header = _create_wav_header(len(accumulated_audio))
-                        yield wav_header
-                        wav_header_sent = True
-                    
-                    # Yield the audio chunk
-                    yield audio_chunk
-                else:
-                    # Raw PCM16 bytes (mono, SAMPLE_RATE)
-                    yield audio_chunk
-    except asyncio.CancelledError:
-        print("🛑 TTS generation cancelled via asyncio")
-        raise
-    except Exception as e:
-        print(f"❌ Error in TTS streaming: {e}")
-        raise
+                # Send WAV header on first chunk
+                if not wav_header_sent:
+                    wav_header = _create_wav_header(len(accumulated_audio))
+                    yield wav_header
+                    wav_header_sent = True
+                
+                # Yield the audio chunk
+                yield audio_chunk
+            else:
+                # Raw PCM16 bytes (mono, SAMPLE_RATE)
+                yield audio_chunk
 
 def _create_wav_header(data_size=0):
     """Create a WAV header for streaming. Use 0 for unknown size."""
