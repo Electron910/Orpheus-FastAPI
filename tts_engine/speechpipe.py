@@ -117,19 +117,46 @@ def convert_to_audio(multiframe, count):
         # Extract the relevant slice and efficiently convert to bytes
         # Keep data on GPU as long as possible
         audio_slice = audio_hat[:, :, 2048:4096]
-        
-        # Process on GPU if possible, with minimal data transfer
+        noise_threshold = 0.001
+        audio_slice = torch.where(
+            torch.abs(audio_slice) < noise_threshold, 
+            torch.zeros_like(audio_slice), 
+            audio_slice
+        )
+
         if snac_device == "cuda":
-            # Scale directly on GPU
+            # Simple moving average filter on GPU
+            kernel = torch.ones(1, 1, 3, device=snac_device) / 3
+            audio_slice = torch.nn.functional.conv1d(
+                audio_slice.unsqueeze(0), kernel, padding=1
+            ).squeeze(0)
+            
             audio_int16_tensor = (audio_slice * 32767).to(torch.int16)
-            # Only transfer the final result to CPU
             audio_bytes = audio_int16_tensor.cpu().numpy().tobytes()
         else:
-            # For non-CUDA devices, fall back to the original approach
+            # CPU version with scipy if available
             detached_audio = audio_slice.detach().cpu()
             audio_np = detached_audio.numpy()
+            
+            # Simple smoothing
+            from scipy import ndimage
+            audio_np = ndimage.uniform_filter1d(audio_np, size=3, axis=-1)
+            
             audio_int16 = (audio_np * 32767).astype(np.int16)
             audio_bytes = audio_int16.tobytes()
+        
+        # Process on GPU if possible, with minimal data transfer
+        # if snac_device == "cuda":
+        #     # Scale directly on GPU
+        #     audio_int16_tensor = (audio_slice * 32767).to(torch.int16)
+        #     # Only transfer the final result to CPU
+        #     audio_bytes = audio_int16_tensor.cpu().numpy().tobytes()
+        # else:
+        #     # For non-CUDA devices, fall back to the original approach
+        #     detached_audio = audio_slice.detach().cpu()
+        #     audio_np = detached_audio.numpy()
+        #     audio_int16 = (audio_np * 32767).astype(np.int16)
+        #     audio_bytes = audio_int16.tobytes()
             
     return audio_bytes
 
