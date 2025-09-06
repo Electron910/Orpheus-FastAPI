@@ -303,8 +303,8 @@ def generate_tokens_from_api(prompt: str, voice: str = DEFAULT_VOICE, temperatur
         "stream": True  # Always stream for better performance
 
         # Add these for cleaner generation
-        "frequency_penalty": 0.1,  # Reduce repetition artifacts
-        "presence_penalty": 0.05,  # Encourage diversity
+        # "frequency_penalty": 0.1,  # Reduce repetition artifacts
+        # "presence_penalty": 0.05,  # Encourage diversity
     }
     
     # Add model field - this is ignored by many local inference servers for /v1/completions
