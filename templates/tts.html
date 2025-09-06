@@ -894,37 +894,76 @@ document.addEventListener("DOMContentLoaded", function() {
 <!-- 🔹 Add new WebSocket streaming logic BELOW existing code -->
 <script>
   // --- Real-time TTS playback via WebSocket ---
+  // let audioContext = null;
+
+  // function initAudio() {
+  //   if (!audioContext) {
+  //     audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+  //   }
+  // }
+
+  // function playPCM16Chunk(base64Data) {
+  //   initAudio();
+
+  //   // Decode base64 → ArrayBuffer
+  //   const raw = atob(base64Data);
+  //   const buffer = new ArrayBuffer(raw.length);
+  //   const view = new Uint8Array(buffer);
+  //   for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
+
+  //   // PCM16 → Float32
+  //   const pcm16 = new Int16Array(buffer);
+  //   const audioBuffer = audioContext.createBuffer(1, pcm16.length, audioContext.sampleRate);
+  //   const channel = audioBuffer.getChannelData(0);
+  //   for (let i = 0; i < pcm16.length; i++) {
+  //     channel[i] = pcm16[i] / 32768;
+  //   }
+
+  //   // Play chunk
+  //   const source = audioContext.createBufferSource();
+  //   source.buffer = audioBuffer;
+  //   source.connect(audioContext.destination);
+  //   source.start();
+  // }
+
+
   let audioContext = null;
 
-  function initAudio() {
-    if (!audioContext) {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-    }
+function initAudio() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+  }
+}
+
+function playPCM16Chunk(base64Data) {
+  initAudio();
+
+  // Base64 → binary
+  const raw = atob(base64Data);
+  const buffer = new ArrayBuffer(raw.length);
+  const view = new Uint8Array(buffer);
+  for (let i = 0; i < raw.length; i++) {
+    view[i] = raw.charCodeAt(i);
   }
 
-  function playPCM16Chunk(base64Data) {
-    initAudio();
-
-    // Decode base64 → ArrayBuffer
-    const raw = atob(base64Data);
-    const buffer = new ArrayBuffer(raw.length);
-    const view = new Uint8Array(buffer);
-    for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
-
-    // PCM16 → Float32
-    const pcm16 = new Int16Array(buffer);
-    const audioBuffer = audioContext.createBuffer(1, pcm16.length, audioContext.sampleRate);
-    const channel = audioBuffer.getChannelData(0);
-    for (let i = 0; i < pcm16.length; i++) {
-      channel[i] = pcm16[i] / 32768;
-    }
-
-    // Play chunk
-    const source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(audioContext.destination);
-    source.start();
+  // PCM16 → Float32
+  const pcm16 = new Int16Array(buffer);
+  const float32 = new Float32Array(pcm16.length);
+  for (let i = 0; i < pcm16.length; i++) {
+    float32[i] = pcm16[i] / 32768;
   }
+
+  // Create AudioBuffer
+  const audioBuffer = audioContext.createBuffer(1, float32.length, 24000);
+  audioBuffer.copyToChannel(float32, 0);
+
+  // Play immediately
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(audioContext.destination);
+  source.start();
+}
+
 
   // --- WebSocket setup ---
   const socket = new WebSocket("ws://127.0.0.1:8000/ws/tts-client");
