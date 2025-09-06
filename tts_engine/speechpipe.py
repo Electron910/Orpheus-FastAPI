@@ -155,7 +155,7 @@ def convert_to_audio(multiframe, count):
         audio_1d = audio_np.flatten()
 
         # --- Apply lowpass filter to remove ultrasonics ---
-        audio_filtered = lowpass_filter(audio_1d, sr=24000, cutoff=10000, order=5)
+        audio_filtered = lowpass_filter(audio_1d, sr=24000, cutoff=6000, order=8)
         # Re-clamp and convert back to int16
         audio_filtered_int16 = np.clip(audio_filtered, -32768, 32767).astype(np.int16)
         audio_bytes = audio_filtered_int16.tobytes()
