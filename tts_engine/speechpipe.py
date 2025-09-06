@@ -7,6 +7,14 @@ import queue
 import time
 import os
 import sys
+from scipy.signal import butter, lfilter
+
+def lowpass_filter(signal, sr=24000, cutoff=10000, order=5):
+    """Apply a Butterworth lowpass filter to remove frequencies > cutoff."""
+    nyquist = 0.5 * sr
+    norm_cutoff = cutoff / nyquist
+    b, a = butter(order, norm_cutoff, btype='low')
+    return lfilter(b, a, signal)
 
 # Helper to detect if running in Uvicorn's reloader (same as in inference.py)
 def is_reloader_process():
@@ -117,48 +125,38 @@ def convert_to_audio(multiframe, count):
         # Extract the relevant slice and efficiently convert to bytes
         # Keep data on GPU as long as possible
         audio_slice = audio_hat[:, :, 2048:4096]
-        noise_threshold = 0.001
-        audio_slice = torch.where(
-            torch.abs(audio_slice) < noise_threshold, 
-            torch.zeros_like(audio_slice), 
-            audio_slice
-        )
 
+
+        
+        # # Process on GPU if possible, with minimal data transfer
         # if snac_device == "cuda":
-        #     # Simple moving average filter on GPU
-        #     kernel = torch.ones(1, 1, 3, device=snac_device) / 3
-        #     audio_slice = torch.nn.functional.conv1d(
-        #         audio_slice.unsqueeze(0), kernel, padding=1
-        #     ).squeeze(0)
-            
+        #     # Scale directly on GPU
         #     audio_int16_tensor = (audio_slice * 32767).to(torch.int16)
+        #     # Only transfer the final result to CPU
         #     audio_bytes = audio_int16_tensor.cpu().numpy().tobytes()
         # else:
-        #     # CPU version with scipy if available
+        #     # For non-CUDA devices, fall back to the original approach
         #     detached_audio = audio_slice.detach().cpu()
         #     audio_np = detached_audio.numpy()
-            
-        #     # Simple smoothing
-        #     from scipy import ndimage
-        #     audio_np = ndimage.uniform_filter1d(audio_np, size=3, axis=-1)
-            
         #     audio_int16 = (audio_np * 32767).astype(np.int16)
         #     audio_bytes = audio_int16.tobytes()
-        
-        # Process on GPU if possible, with minimal data transfer
+
         if snac_device == "cuda":
-            # Scale directly on GPU
-            audio_int16_tensor = (audio_slice * 32767).to(torch.int16)
-            # Only transfer the final result to CPU
-            audio_bytes = audio_int16_tensor.cpu().numpy().tobytes()
+            # Convert to numpy for filtering
+            audio_np = audio_int16_tensor.cpu().numpy()
         else:
-            # For non-CUDA devices, fall back to the original approach
-            detached_audio = audio_slice.detach().cpu()
-            audio_np = detached_audio.numpy()
-            audio_int16 = (audio_np * 32767).astype(np.int16)
-            audio_bytes = audio_int16.tobytes()
+            audio_np = audio_int16
+
+        # Flatten to 1D audio PCM
+        audio_1d = audio_np.flatten()
+
+        # --- Apply lowpass filter to remove ultrasonics ---
+        audio_filtered = lowpass_filter(audio_1d, sr=24000, cutoff=10000, order=5)
+        # Re-clamp and convert back to int16
+        audio_filtered_int16 = np.clip(audio_filtered, -32768, 32767).astype(np.int16)
+        audio_bytes = audio_filtered_int16.tobytes()
             
-    return audio_bytes
+        return audio_bytes
 
 # Define the custom token prefix
 CUSTOM_TOKEN_PREFIX = "<custom_token_"
