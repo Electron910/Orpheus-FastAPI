@@ -8,6 +8,7 @@ import time
 import os
 import sys
 from scipy.signal import butter, lfilter
+import noisereduce as nr
 
 def lowpass_filter(signal, sr=24000, cutoff=10000, order=5):
     """Apply a Butterworth lowpass filter to remove frequencies > cutoff."""
@@ -151,16 +152,31 @@ def convert_to_audio(multiframe, count):
             audio_int16 = (audio_np * 32767).astype(np.int16)
             audio_np = audio_int16
 
-        # Flatten to 1D audio PCM
-        audio_1d = audio_np.flatten()
+        audio_float = audio_np.flatten().astype(np.float32) / 32767.0
 
-        # --- Apply lowpass filter to remove ultrasonics ---
-        audio_filtered = lowpass_filter(audio_1d, sr=24000, cutoff=6000, order=8)
-        # Re-clamp and convert back to int16
-        audio_filtered_int16 = np.clip(audio_filtered, -32768, 32767).astype(np.int16)
+        # Apply spectral noise reduction to remove ultrasonics and other noise
+        audio_denoised = nr.reduce_noise(y=audio_float, sr=24000)
+
+        # Optionally apply lowpass filter again for smoother cutoff
+        audio_filtered = lowpass_filter(audio_denoised, sr=24000, cutoff=6000, order=8)
+
+        # Convert back to int16 with clipping for WAV output
+        audio_filtered_int16 = np.clip(audio_filtered * 32767, -32768, 32767).astype(np.int16)
+
+        # Convert to bytes for streaming/output
         audio_bytes = audio_filtered_int16.tobytes()
+
+        return audio_bytes
+    #     # Flatten to 1D audio PCM
+    #     audio_1d = audio_np.flatten()
+
+    #     # --- Apply lowpass filter to remove ultrasonics ---
+    #     audio_filtered = lowpass_filter(audio_1d, sr=24000, cutoff=6000, order=8)
+    #     # Re-clamp and convert back to int16
+    #     audio_filtered_int16 = np.clip(audio_filtered, -32768, 32767).astype(np.int16)
+    #     audio_bytes = audio_filtered_int16.tobytes()
             
-    return audio_bytes
+    # return audio_bytes
 
 # Define the custom token prefix
 CUSTOM_TOKEN_PREFIX = "<custom_token_"
