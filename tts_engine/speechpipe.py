@@ -143,8 +143,12 @@ def convert_to_audio(multiframe, count):
 
         if snac_device == "cuda":
             # Convert to numpy for filtering
+            audio_int16_tensor = (audio_slice * 32767).to(torch.int16)
             audio_np = audio_int16_tensor.cpu().numpy()
         else:
+            detached_audio = audio_slice.detach().cpu()
+            audio_np = detached_audio.numpy()
+            audio_int16 = (audio_np * 32767).astype(np.int16)
             audio_np = audio_int16
 
         # Flatten to 1D audio PCM
@@ -156,7 +160,7 @@ def convert_to_audio(multiframe, count):
         audio_filtered_int16 = np.clip(audio_filtered, -32768, 32767).astype(np.int16)
         audio_bytes = audio_filtered_int16.tobytes()
             
-        return audio_bytes
+    return audio_bytes
 
 # Define the custom token prefix
 CUSTOM_TOKEN_PREFIX = "<custom_token_"
