@@ -295,19 +295,13 @@ def generate_tokens_from_api(prompt: str, voice: str = DEFAULT_VOICE, temperatur
     
     # Create the request payload (model field may not be required by some endpoints but included for compatibility)
     payload = {
-        # "prompt": formatted_prompt,
-        # "max_tokens": max_tokens,
-        # "temperature": temperature,
-        # "top_p": top_p,
-        # "repeat_penalty": repetition_penalty,
-        # "stream": True  # Always stream for better performance
-
         "prompt": formatted_prompt,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
         "repeat_penalty": repetition_penalty,
-        "stream": True,
+        "stream": True  # Always stream for better performance
+
         # Add these for cleaner generation
         "frequency_penalty": 0.1,  # Reduce repetition artifacts
         "presence_penalty": 0.05,  # Encourage diversity
