@@ -927,7 +927,7 @@ document.addEventListener("DOMContentLoaded", function() {
   }
 
   // --- WebSocket setup ---
-  const socket = new WebSocket("ws://127.0.0.1:8000/ws");
+  const socket = new WebSocket("ws://127.0.0.1:8000/ws/tts-client");
 
   socket.onopen = () => console.log("✅ Connected to TTS WebSocket");
 
